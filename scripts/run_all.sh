@@ -13,6 +13,11 @@ for s in $STEPS; do
     dataset) $SSH "cd $REMOTE_DIR && source .venv/bin/activate && python scripts/make_dataset.py ${DATASET_ARGS:-}" ;;
     train)   $SSH "cd $REMOTE_DIR && source .venv/bin/activate && python scripts/train.py ${TRAIN_ARGS:-}" ;;
     eval)    $SSH "cd $REMOTE_DIR && source .venv/bin/activate && python scripts/eval.py ${EVAL_ARGS:-}" ;;
+    ade-dataset)   $SSH "cd $REMOTE_DIR && source .venv/bin/activate && python scripts/ade_make_dataset.py ${ADE_DATASET_ARGS:-}" ;;
+    ade-train)     $SSH "cd $REMOTE_DIR && source .venv/bin/activate && python scripts/train.py --data data/ade_train.jsonl --out out/ade-lora ${ADE_TRAIN_ARGS:-}" ;;
+    ade-eval)      $SSH "cd $REMOTE_DIR && source .venv/bin/activate && python scripts/ade_eval.py ${ADE_EVAL_ARGS:-}" ;;
+    genomic-train) $SSH "cd $REMOTE_DIR && source .venv/bin/activate && python scripts/genomic_train.py ${GENOMIC_TRAIN_ARGS:-}" ;;
+    genomic-eval)  $SSH "cd $REMOTE_DIR && source .venv/bin/activate && python scripts/genomic_eval.py ${GENOMIC_EVAL_ARGS:-}" ;;
     *) echo "unknown step $s"; exit 1 ;;
   esac
 done

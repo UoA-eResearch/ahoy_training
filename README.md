@@ -1,10 +1,29 @@
-# ahoymatey_on_gb10 — fine-tune a tiny model to talk like a pirate
+# ahoymatey_on_gb10 — learn fine-tuning on a DGX GB10, from pirates to genomes
 
-Reproducible LoRA fine-tune of **Qwen/Qwen2.5-0.5B-Instruct** (ungated, no HF token
-needed) so it answers *everything* in pirate dialect — no system prompt required.
-Runs on an NVIDIA DGX GB10 (aarch64 + Blackwell) with no root access.
+Reproducible LoRA fine-tuning demos for an NVIDIA DGX GB10 (aarch64 + Blackwell,
+no root access), in two levels. Every model and dataset is ungated on
+HuggingFace — no HF token, no license click-through:
 
-## Procedure
+- **Level 1 — Pirate chat model** (start here): fine-tune
+  **Qwen/Qwen2.5-0.5B-Instruct** so it answers *everything* in pirate dialect,
+  no system prompt required. Whimsical, fast, and it teaches the whole
+  dataset → train → eval loop.
+- **Level 2 — practical demos**, same techniques, real-world payoff:
+  - **Medical ADE extractor**: the same Qwen student learns to pull structured
+    `{drug, effect}` JSON out of published case-report sentences.
+  - **Genomic classifier**: a DNA foundation model (Nucleotide Transformer)
+    learns to recognize gene promoters and splice sites — coin-flip before,
+    ~90 %+ after.
+
+The guided way in, once setup is done (menus for track, model, and task):
+
+```bash
+python scripts/tune.py
+```
+
+Or run the per-track scripts directly, as documented below.
+
+## Level 1: the pirate (start here)
 
 Everything below runs **on the GB10** over SSH. Swap in your own host/user.
 
@@ -95,10 +114,65 @@ python scripts/chat.py                       # defaults to out/pirate-lora-merge
 python scripts/chat.py out/pirate-lora        # or point it at a specific model/adapter dir
 ```
 
+## Level 2: practical demos
+
+Both demos use public benchmark data — nothing sensitive. Estimated times below
+are unmeasured; the pirate table is the calibration point.
+
+### 2a. Medical ADE extraction (same Qwen stack, practical output)
+
+Turns the pirate pipeline's machinery to a real task: extracting adverse drug
+events from biomedical text. The data is
+`ade-benchmark-corpus/ade_corpus_v2` (ungated) — sentences from *published*
+PubMed case reports with gold drug/effect annotations, a standard NLP
+benchmark, no patient records.
+
+```bash
+python scripts/ade_make_dataset.py     # seconds, no GPU: ~5k train / 200 eval sentences
+python scripts/train.py --data data/ade_train.jsonl --out out/ade-lora
+python scripts/ade_eval.py
+```
+
+`train.py` is the same script (and same student-model menu) as the pirate
+track. The eval scores JSON validity plus precision/recall/F1 on extracted
+`(drug, effect)` pairs, base vs tuned. Expected story: the base 0.5B replies
+with chatty prose (near-zero valid JSON); after ~5 minutes of LoRA it emits
+clean `{"adverse_events": [{"drug": "azithromycin", "effect": "ototoxicity"}]}`
+with solid F1 — the "unreliable chatbot → dependable component" transformation
+that makes fine-tuning useful in practice.
+
+### 2b. Genomic sequence classification (a scientific foundation model)
+
+Fine-tunes **InstaDeepAI/nucleotide-transformer-500m-human-ref** — a 500M-param
+DNA language model, ungated and stock ESM architecture (no `trust_remote_code`,
+so it runs on the pinned aarch64 stack) — on tasks from the published
+Nucleotide Transformer benchmark
+(`InstaDeepAI/nucleotide_transformer_downstream_tasks_revised`, ungated windows
+of the human *reference* genome).
+
+```bash
+python scripts/genomic_train.py        # task picker menu; --task promoter_all to skip it
+python scripts/genomic_eval.py
+```
+
+The task menu offers promoter detection (default), TATA-box promoters (smallest
+— quickest run), enhancers, splice sites (splicing mutations cause disease),
+and the H3K4me3 histone mark. `--n 2000` subsamples for a quick first run.
+
+The eval is the point: **before** = the base model with an untrained
+classification head (what you'd have without fine-tuning — a coin flip);
+**after** = ~15 minutes of LoRA. Expect roughly 50 % → 90 %+ accuracy (with
+Matthews correlation alongside, the standard metric in this benchmark). Same
+LoRA technique as the pirate — applied to a genome instead of a chat log.
+
+> Note: the Nucleotide Transformer weights are CC-BY-NC-SA (non-commercial) —
+> fine for this instructive demo, but check the license before building a
+> product on them.
+
 ## Choosing a model
 
-Both `make_dataset.py` (the teacher) and `train.py` (the student) show a numbered
-menu when run interactively. Every model listed downloads from HuggingFace
+Both `make_dataset.py` (the teacher) and `train.py` (the student — pirate and
+ADE tracks alike) show a numbered menu when run interactively. Every model listed downloads from HuggingFace
 anonymously — no `HF_TOKEN`, no license click-through. That's why the ladder is
 Qwen throughout: the Llama, Gemma and Mistral instruct repos are all gated.
 
@@ -140,6 +214,11 @@ Edit `scripts/common.sh` (host, ssh key, remote dir), then from your laptop:
 scripts/run_all.sh                          # setup -> dataset -> train -> eval, all remote
 STEPS="train eval" scripts/run_all.sh       # re-run just some steps
 TRAIN_ARGS="--epochs 5 --rank 32" STEPS=train scripts/run_all.sh
+
+# Level 2 tracks have their own steps:
+STEPS="ade-dataset ade-train ade-eval" scripts/run_all.sh
+STEPS="genomic-train genomic-eval" scripts/run_all.sh
+GENOMIC_TRAIN_ARGS="--task splice_sites_all" STEPS="genomic-train genomic-eval" scripts/run_all.sh
 ```
 
 This rsyncs `scripts/` to the GB10 and runs each step there over SSH — no need
@@ -176,7 +255,7 @@ One caveat: at 0.5B parameters, factual accuracy is weak regardless of style
 an effect of fine-tuning. Pick a larger student from the menu (see
 [Choosing a model](#choosing-a-model)) for smarter pirates.
 
-## Timings on the GB10
+## Timings on the GB10 (pirate track, measured)
 
 | Step | Time |
 |---|---|
