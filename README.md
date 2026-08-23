@@ -38,7 +38,7 @@ python scripts/chat.py
 ```
 
 Timings on the GB10: setup ~5 min, dataset ~40 min (7B teacher, HF generate, batch 48),
-training ~2 min, eval <1 min.
+training ~4.5 min (3 epochs, loss 2.85 → 1.30), eval ~1 min. Result: 11/11 held-out prompts answered in pirate vs 0/11 for the base model.
 
 ## Why this works when other pirate tutorials didn't
 
