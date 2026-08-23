@@ -7,10 +7,10 @@ pirate dialect*. Output: data/pirate_train.jsonl + data/pirate_eval.jsonl with
 {"messages":[{"role":"user",...},{"role":"assistant",...}]} rows (no system
 prompt, so the student learns to be a pirate unconditionally).
 """
-import argparse, json, os, random, re
-import torch
-from datasets import load_dataset
-from transformers import AutoTokenizer, AutoModelForCausalLM
+import argparse, json, os, random, re, sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import models
 
 SYSTEM = (
     "You are Captain Redbeard, a salty old pirate. Answer the user's question helpfully "
@@ -21,14 +21,31 @@ SYSTEM = (
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--teacher", default="Qwen/Qwen2.5-7B-Instruct")
+    ap.add_argument("--teacher", default=None, help="HF repo id; omit for the picker menu")
+    ap.add_argument("--list-models", action="store_true", help="print the model menu and exit")
+    ap.add_argument("--yes", "-y", action="store_true", help="skip the large-model confirmation")
     ap.add_argument("--n", type=int, default=1500)
     ap.add_argument("--eval_n", type=int, default=50)
-    ap.add_argument("--batch", type=int, default=48)
+    ap.add_argument("--batch", type=int, default=None, help="default scales with teacher size")
     ap.add_argument("--max_new_tokens", type=int, default=200)
     ap.add_argument("--out", default="data")
     ap.add_argument("--seed", type=int, default=0)
     a = ap.parse_args()
+
+    if a.list_models:
+        print(models.format_menu("gen_est", "gen", models.DEFAULT_TEACHER))
+        return
+
+    entry = (models.lookup(a.teacher) if a.teacher else
+             models.choose_model("teacher", models.DEFAULT_TEACHER, "gen_est", "gen"))
+    models.confirm(entry, "gen_est", assume_yes=a.yes)
+    batch = a.batch if a.batch is not None else entry["gen_batch"]
+    print(f"teacher {entry['id']} ({entry['params']}) -- batch {batch}, est {entry['gen_est']}")
+
+    import torch                                   # imported late: slow, not needed for the menu
+    from datasets import load_dataset
+    from transformers import AutoTokenizer, AutoModelForCausalLM
+
     random.seed(a.seed)
     os.makedirs(a.out, exist_ok=True)
 
@@ -41,14 +58,14 @@ def main():
     prompts = [r["instruction"].strip() for r in rows[: a.n + a.eval_n]]
     print(f"{len(prompts)} prompts selected")
 
-    tok = AutoTokenizer.from_pretrained(a.teacher)
+    tok = AutoTokenizer.from_pretrained(entry["id"])
     tok.padding_side = "left"
-    model = AutoModelForCausalLM.from_pretrained(a.teacher, dtype=torch.bfloat16, device_map="cuda")
+    model = AutoModelForCausalLM.from_pretrained(entry["id"], dtype=torch.bfloat16, device_map="cuda")
     model.eval()
 
     outputs = []
-    for i in range(0, len(prompts), a.batch):
-        chunk = prompts[i:i + a.batch]
+    for i in range(0, len(prompts), batch):
+        chunk = prompts[i:i + batch]
         texts = [tok.apply_chat_template(
             [{"role": "system", "content": SYSTEM}, {"role": "user", "content": p}],
             tokenize=False, add_generation_prompt=True) for p in chunk]

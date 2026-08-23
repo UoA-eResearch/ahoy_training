@@ -53,24 +53,30 @@ Takes ~40 minutes (batched generation on the 7B teacher). Produces
 **no system message**, so the student has to internalize the pirate voice
 rather than being told to use it.
 
-Useful flags: `--teacher <model>` to swap the teacher model, `--n 500` for a
-quick/cheap run, `--batch 16` if you're VRAM constrained.
+It asks which teacher model to use from a numbered menu (default 7B); pass
+`--teacher <hf-repo-id>` to skip the prompt. Other useful flags: `--n 500` for a
+quick/cheap run, `--batch 16` if you're memory constrained, `--list-models` to
+see the menu without running anything.
 
 ### 4. Fine-tune
 
-LoRA (rank 16, all linear layers) supervised fine-tune of the 0.5B student
+LoRA (rank 16, all linear layers) supervised fine-tune of the student model
 using TRL's `SFTTrainer`, with loss computed only on assistant tokens.
 
 ```bash
 python scripts/train.py
 ```
 
-Takes ~4.5 minutes for 3 epochs on the GB10. Saves two things:
+It opens a numbered menu of student models — see
+[Choosing a model](#choosing-a-model). The default (0.5B) takes ~4.5 minutes for
+3 epochs on the GB10. Saves two things:
 - `out/pirate-lora` — the LoRA adapter only
 - `out/pirate-lora-merged` — a full standalone model (load with `transformers`
-  or `vLLM`, no PEFT dependency needed)
+  or `vLLM`, no PEFT dependency needed). Skipped above 7B, where the merged copy
+  is tens of GB; pass `--save-merged` to force it, or `--no-save-merged` to skip it.
 
-Useful flags: `--epochs 5`, `--rank 32`, `--lr 1e-4`, `--model <other-base-model>`.
+Useful flags: `--epochs 5`, `--rank 32`, `--lr 1e-4`, `--model <hf-repo-id>` to
+bypass the menu, `-y` to auto-accept the large-model warning.
 
 ### 5. Evaluate
 
@@ -88,6 +94,43 @@ python scripts/eval.py
 python scripts/chat.py                       # defaults to out/pirate-lora-merged
 python scripts/chat.py out/pirate-lora        # or point it at a specific model/adapter dir
 ```
+
+## Choosing a model
+
+Both `make_dataset.py` (the teacher) and `train.py` (the student) show a numbered
+menu when run interactively. Every model listed downloads from HuggingFace
+anonymously — no `HF_TOKEN`, no license click-through. That's why the ladder is
+Qwen throughout: the Llama, Gemma and Mistral instruct repos are all gated.
+
+```bash
+python scripts/train.py --list-models
+```
+
+| # | Model | Params | ~Memory | ~Train | ~Generate |
+|---|---|---|---|---|---|
+| 1 | `Qwen/Qwen2.5-0.5B-Instruct` | 0.5B | 3 GB | ~5 min | ~10 min |
+| 2 | `Qwen/Qwen2.5-1.5B-Instruct` | 1.5B | 6 GB | ~10 min | ~20 min |
+| 3 | `Qwen/Qwen2.5-3B-Instruct` | 3B | 10 GB | ~15 min | ~25 min |
+| 4 | `Qwen/Qwen2.5-7B-Instruct` | 7B | 20 GB | ~30 min | ~40 min |
+| 5 | `Qwen/Qwen2.5-14B-Instruct` | 14B | 36 GB | ~1 h | ~1.3 h |
+| 6 | `Qwen/Qwen2.5-32B-Instruct` | 32B | 74 GB | ~2.5 h | ~3 h |
+| 7 | `Qwen/Qwen2.5-72B-Instruct` | 72B | 150 GB | won't fit | won't fit |
+| 0 | any other HuggingFace repo id | | | | |
+
+Only the 0.5B train time and the 7B generate time are measured; the rest are
+estimates. Options 5 and 6 ask for confirmation before downloading, and option 7
+is refused outright — 72B needs ~150 GB in bf16 against the GB10's ~110 GB
+usable, so it would need 4-bit QLoRA on one box or bf16 LoRA split across two
+GB10s with pipeline parallelism, neither of which is wired up here.
+
+Batch size and gradient checkpointing scale automatically with the model you
+pick (the 152k-token vocabulary makes the logits tensor the binding constraint at
+the large end), and `eval.py` reads the base model back out of the adapter
+config, so it compares against whatever you actually trained.
+
+**Non-interactive runs never prompt.** When stdin isn't a TTY — which is how
+`run_all.sh` drives the box over SSH — both scripts print a note and fall back to
+their defaults (0.5B student, 7B teacher) rather than hanging.
 
 ## Alternative: drive it from your laptop
 
@@ -129,9 +172,9 @@ pirate voice is fully learned into the weights.
 **Pirate-marker hit rate:** 11/11 held-out prompts for the tuned model, vs 0/11 for the base model.
 
 One caveat: at 0.5B parameters, factual accuracy is weak regardless of style
-(e.g. it once called a platypus "feathered") — that's the base model's size,
-not an effect of fine-tuning. Swap `--model Qwen/Qwen2.5-1.5B-Instruct` in
-`train.py` (and as `--teacher`/base for eval) for smarter pirates.
+(e.g. it once called a platypus "feathered") — that's the base model's size, not
+an effect of fine-tuning. Pick a larger student from the menu (see
+[Choosing a model](#choosing-a-model)) for smarter pirates.
 
 ## Timings on the GB10
 
@@ -139,7 +182,7 @@ not an effect of fine-tuning. Swap `--model Qwen/Qwen2.5-1.5B-Instruct` in
 |---|---|
 | `setup.sh` | ~5 min |
 | `make_dataset.py` (7B teacher, batch 48, 1550 prompts) | ~40 min |
-| `train.py` (3 epochs, loss 2.85 → 1.30) | ~4.5 min |
+| `train.py` (0.5B student, 3 epochs, loss 2.85 → 1.30) | ~4.5 min |
 | `eval.py` | ~1 min |
 
 ## Why this works when other pirate tutorials didn't

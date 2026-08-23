@@ -2,3 +2,4 @@ data/
 out/
 .venv/
 *.log
+scripts/__pycache__/
