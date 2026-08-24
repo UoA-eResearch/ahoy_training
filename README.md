@@ -1,298 +1,237 @@
-# ahoy_training — learn fine-tuning on a DGX GB10, from pirates to genomes
+# ahoy_training — hands-on fine-tuning on a DGX GB10
 
-Reproducible LoRA fine-tuning demos for an NVIDIA DGX GB10 (aarch64 + Blackwell,
-no root access), in three tracks of increasing seriousness. Every model and
-dataset is ungated on HuggingFace — no HF token, no license click-through:
+Three self-contained fine-tuning demos you can run end to end on an NVIDIA
+DGX GB10 (aarch64 + Blackwell, no root access). Each one takes a model that
+already works, shows you what it can't do yet, trains it for a few minutes,
+and shows you what changed.
 
-| # | Track | What you get | ~Time |
+Everything uses **LoRA**: the original model's weights are frozen and a small
+adapter is trained beside them. That's why these finish in minutes and produce
+a few hundred megabytes instead of running for hours and producing tens of
+gigabytes. Every model and dataset is ungated on HuggingFace — no token, no
+license click-through.
+
+| # | Track | What it teaches a model to do | ~Time |
 |---|---|---|---|
-| 1 | **Pirate chat model** | Whimsical intro: Qwen answers *everything* in pirate dialect, no system prompt needed | ~50 min |
-| 2 | **Medical ADE extractor** | Practical: the same Qwen learns to pull structured `{drug, effect}` JSON from case-report sentences — F1 0.00 → 0.72 | ~11 min |
-| 3 | **Genomic classifier** | Scientific: a DNA foundation model learns to recognize gene promoters — accuracy 0.51 → 0.89 | ~9 min |
+| 1 | **Pirate chat model** | Answer everything in pirate dialect — a new *voice*, learned into the weights | ~50 min |
+| 2 | **Medical ADE extractor** | Read a case-report sentence and return the drug/side-effect pairs as JSON | ~11 min |
+| 3 | **Genomic classifier** | Look at a window of DNA and say whether it contains a gene promoter | ~9 min |
 
-Start with the pirate — it teaches the whole dataset → train → eval loop with a
-result you can chat to. Then the other two show why the same technique matters
-for real scientific and medical work.
+Track 1 is the friendliest introduction — the result is something you can talk
+to, and the change is audible in one sentence. Tracks 2 and 3 apply the exact
+same technique to tasks with real scientific value. The method doesn't change
+between them; only the dataset does.
+
+## How every track works
+
+All three follow the same four beats, and the launcher explains each one as it
+runs:
+
+1. **See what you're starting with.** The untrained model attempts the task in
+   front of you. This is the problem the rest of the run is fixing, and it's
+   what the final numbers get compared against. On track 1 you chat with the
+   untrained model yourself and your questions are saved for later.
+2. **Get the training data.** Tracks 2 and 3 use published, annotated datasets
+   directly. Track 1 has to *generate* its data first, because no dataset of
+   pirate answers exists.
+3. **Train the adapter.** A few minutes of LoRA on the GPU. Under 1% of the
+   model's weights move.
+4. **Measure and read the difference.** Held-out examples the model never
+   trained on, scored before and after. On track 1 you also get your own
+   questions replayed side by side, and then the prompt back to keep chatting.
 
 ## Setup (once)
 
-Everything runs **on the GB10** over SSH. Swap in your own host/user.
-
-**Step 1.** SSH in:
+Everything runs **on the GB10** over SSH. Swap in your own host and user.
 
 ```bash
-ssh -i ~/.ssh/id_rsa smat924@lais01.cer.auckland.ac.nz
+ssh -i <user>@<name or ip of GB10>
 ```
-
-**Step 2.** Get the code:
 
 ```bash
 git clone https://github.com/UoA-eResearch/ahoy_training.git ~/ahoy_training
 cd ~/ahoy_training
-```
-
-**Step 3.** Create the environment — a `uv` venv with CUDA PyTorch (the `cu130`
-aarch64 wheels, which support the GB10's `sm_121` GPU) plus the HuggingFace
-fine-tuning stack. No root needed. Takes ~5 minutes:
-
-```bash
 bash scripts/setup.sh
-source .venv/bin/activate
 ```
 
-It ends by printing your GPU name — confirm it says `NVIDIA GB10`.
+`setup.sh` builds a `uv` virtual environment with CUDA PyTorch (the `cu130`
+aarch64 wheels, which support the GB10's `sm_121` GPU) plus the HuggingFace
+fine-tuning stack. No root needed, takes about five minutes, and it ends by
+printing your GPU name — confirm it says `NVIDIA GB10`.
 
-(Prefer to drive everything from your laptop instead? See
-[Alternative: drive it from your laptop](#alternative-drive-it-from-your-laptop).)
-
-## The guided way: one menu
+## Running it
 
 ```bash
-python scripts/tune.py
+source .venv/bin/activate && python scripts/tune.py
 ```
 
-Pick a track from the numbered menu and it runs that track's steps in order,
-offering to skip any step whose output already exists. Each track's own menus
-(student model, DNA task) still appear along the way. The sections below are the
-same steps run by hand.
+Pick a track from the menu. It asks a couple of setup questions up front
+(which model to tune, which DNA task), then walks the steps in order — showing
+what each step does and why it matters before it runs, and pausing so you can
+run it, skip it, or stop. Anything already built from an earlier run is offered
+as a skip, so it's safe to re-run and pick up where you left off.
 
-## Option 1: Pirate chat model (start here)
+## Track 1 — Pirate chat model
 
-Fine-tunes **Qwen/Qwen2.5-0.5B-Instruct** so it answers everything in pirate
-dialect — learned into the weights, no system prompt required.
+**What's being trained.** The model's *behaviour* — its voice — not its facts
+or capabilities. There's no real-world value in a pirate specifically. The
+point is that this is the same mechanism behind everything that reshapes how a
+model responds: house style, a fixed output format, a domain persona, refusal
+behaviour. It's the clearest possible demonstration because you can hear the
+change immediately.
 
-**What's being trained, and why it matters:** this is plain chat-style
-fine-tuning — the model's *behaviour* (its tone/voice) is being reshaped, not
-its facts or capabilities. There's no real-world value in a pirate voice
-specifically; the point is that this is the exact same mechanism used for
-anything that reshapes how a model responds — house style, refusal behaviour,
-format compliance, persona — without a system prompt or extra scaffolding at
-inference time. It's the "hello world" for tracks 2 and 3, which apply the
-identical LoRA recipe to tasks with real stakes.
+The interesting constraint is that the training examples contain **no system
+prompt**. The model is never told to be a pirate — it only ever sees questions
+paired with piratey answers, so the only place the behaviour can end up is in
+the weights. Nothing is added to the prompt at inference time.
 
-**Step 1 — build the dataset** (~40 min). This is "self-distillation": ~1500
-real user prompts from `databricks/databricks-dolly-15k` (ungated) are answered
-by a larger ungated teacher model under a pirate system prompt; answers that
-don't sound piratey are filtered out.
+**Where the data comes from.** ~1500 real user questions from
+`databricks/databricks-dolly-15k`, answered in dialect by a larger "teacher"
+model (default Qwen2.5-7B) under a pirate system prompt, with replies that
+don't actually sound piratey filtered out. Generating training data from a
+bigger model is called **self-distillation**, and it's the standard answer to
+"I know what I want the model to do, but I have no dataset for it."
 
-```bash
-python scripts/make_dataset.py
-```
+**What you'll see.** Held-out prompts, greedy decoding, no system prompt:
 
-A numbered menu asks which teacher to use (default: Qwen2.5-7B). The output is
-`data/pirate_train.jsonl` + `data/pirate_eval.jsonl` — plain
-`{"messages": [...]}` rows with **no system message**, so the student has to
-internalize the pirate voice rather than being told to use it.
+> **Prompt:** What is the capital of France?
+>
+> **Before:** The capital of France is Paris.
+>
+> **After:** Arrr, ye be askin' 'bout th' capital o' France, me hearty! It be Paris, yer highness, shiver me timbers!
 
-Useful flags: `--teacher <hf-repo-id>` to skip the menu, `--n 500` for a
-quick/cheap run, `--batch 16` if memory constrained, `--list-models`.
+> **Prompt:** Explain what a neural network is.
+>
+> **Before:** A neural network is a complex computational model inspired by the structure and function of the human brain. It consists of interconnected nodes or "neurons" that process information through a series of layers...
+>
+> **After:** Arrr, ye be askin' 'bout them fancy machines that learn from data! A neural network be like a ship sailin' through the ocean of information, pickin' up patterns and connections from each bit o' data it receives. It uses layers o' neurons to process this input, much like how yer eyes work to see the world...
 
-**Step 2 — fine-tune** (~5 min). LoRA (rank 16, all linear layers) SFT with
-TRL, loss computed only on the assistant tokens:
+**Pirate-marker hit rate:** 11/11 held-out prompts after training, 0/11 before.
 
-```bash
-python scripts/train.py
-```
+At the end you get the prompt back and can keep chatting — try questions you
+didn't ask at the start, since holding the voice on unseen input is what
+separates a generalised behaviour from a memorised training set.
 
-A menu asks which student model to tune (default: 0.5B — see
-[Choosing a model](#choosing-a-model)). Saves `out/pirate-lora` (adapter) and
-`out/pirate-lora-merged` (standalone model; skipped above 7B where it's tens of
-GB — `--save-merged` forces it).
+One caveat: at 0.5B parameters, factual accuracy is weak regardless of style
+(it once called a platypus "feathered"). That's the base model's size, not an
+effect of fine-tuning — pick a larger student for smarter pirates.
 
-Useful flags: `--epochs 5`, `--rank 32`, `--lr 1e-4`, `--model <hf-repo-id>`,
-`-y` to auto-accept the large-model warning.
+## Track 2 — Medical ADE extractor
 
-**Step 3 — evaluate.** Base vs tuned side by side on held-out prompts, plus a
-crude "does the reply contain pirate words" hit rate:
+**What's being trained.** *Structured information extraction* — not
+conversation, and not classification of clinical notes. Given a sentence, the
+model has to decide whether it describes an adverse drug event at all, and if
+so emit the exact `{drug, effect}` pairs as JSON: spotting the drug name, the
+effect it caused, and the link between them, while staying silent on sentences
+that describe neither so it doesn't invent reactions that were never reported.
 
-```bash
-python scripts/eval.py
-```
+This is the shape of most real LLM work — read unstructured text, emit a
+structured record something downstream can rely on.
 
-**Step 4 — chat with it:**
-
-```bash
-python scripts/chat.py                       # defaults to out/pirate-lora-merged
-python scripts/chat.py out/pirate-lora       # or point at a model/adapter dir
-```
-
-See [Example output](#example-output-pirate-track) below for what to expect.
-
-## Option 2: Medical ADE extractor
-
-Turns the same pipeline to a real task: extracting **adverse drug events** from
-biomedical text. The data (`ade-benchmark-corpus/ade_corpus_v2`, ungated) is
+**Where the data comes from.** `ade-benchmark-corpus/ade_corpus_v2`: ~5.5k
 sentences from *published* PubMed case reports with gold drug/effect
-annotations — a standard NLP benchmark, no patient records.
+annotations, a standard NLP benchmark. ~1500 sentences reporting no adverse
+event are mixed in as negatives — without them the model learns "always find
+something." **No patient records are involved anywhere**: these are sentences
+from papers that have been published and de-identified for years.
 
-**What's being trained:** this is *structured information extraction*, not
-free-text generation or clinical-note classification. Given a sentence, the
-model must decide whether it describes an adverse drug event at all, and if
-so emit the exact `{drug, effect}` pair(s) as JSON — correctly spotting the
-drug name, the effect it caused, and the link between them, while staying
-silent on sentences that don't describe one (so it doesn't hallucinate events
-that aren't there). It never sees real patient data: the source sentences are
-already-published, de-identified case-report literature, and the "clinical"
-signal here is a benchmark NLP task, not PHI.
+**Why it matters.** Mining case-report literature (or, in a real deployment,
+EHR narrative text) for adverse drug events is a genuine pharmacovigilance
+task, normally done by manual clinical review at far lower throughput. The same
+recipe generalises to any "read text, fill in this schema" job — diagnoses,
+medications and dosages, trial eligibility criteria.
 
-**Real-world benefit:** this pattern — small LLM turned into a reliable
-extractor for a fixed schema — is how pharmacovigilance and biomedical
-literature-mining pipelines work in practice: scanning large volumes of case
-reports or EHR narrative text for adverse-event mentions, which is otherwise
-done by manual clinical review at far lower throughput. The same recipe
-generalizes to any "read unstructured text, emit a structured record" task
-(e.g. extracting diagnoses, medications and dosages, or trial eligibility
-criteria).
-
-**Step 1 — build the dataset** (seconds, no GPU). ~5.5k train / 200 eval
-sentences; negative sentences are mixed in so the model learns to output an
-empty list instead of hallucinating:
-
-```bash
-python scripts/ade_make_dataset.py
-```
-
-**Step 2 — fine-tune** (~10 min). Same script and same student-model menu as
-the pirate track, pointed at the ADE data:
-
-```bash
-python scripts/train.py --data data/ade_train.jsonl --out out/ade-lora
-```
-
-**Step 3 — evaluate.** Scores JSON validity plus precision/recall/F1 on
-extracted `(drug, effect)` pairs, base vs tuned:
-
-```bash
-python scripts/ade_eval.py
-```
-
-Measured result (0.5B student, defaults):
+**Measured result** (0.5B student, 100 held-out sentences):
 
 |  | valid JSON | precision | recall | F1 |
 |---|---|---|---|---|
-| base | 100/100 | 0.000 | 0.000 | **0.000** |
-| tuned | 99/100 | 0.763 | 0.685 | **0.722** |
+| before | 100/100 | 0.000 | 0.000 | **0.000** |
+| after | 99/100 | 0.763 | 0.685 | **0.722** |
 
-The failure mode is instructive: the base 0.5B dutifully follows the JSON
-format but extracts *nothing* — it answers `{"adverse_events": []}` for nearly
-every sentence. It has learned the *shape* of the answer from its general
-instruction-tuning but has no learned behaviour for actually pulling
-drug/effect spans out of text, so precision and recall both sit at 0.000 —
-not because it gets pairs wrong, but because it never proposes any. Ten
-minutes of LoRA turns that into real extractions: recall of 0.685 means it
-now correctly finds roughly two-thirds of the true drug/effect pairs in the
-eval set, and precision of 0.763 means most of what it does extract is
-correct rather than invented — a large, measurable jump from a model that
-previously extracted nothing at all:
+The failure mode before training is the instructive part. The base model
+follows the JSON format perfectly and extracts *nothing* — it answers
+`{"adverse_events": []}` for almost every sentence. It has learned the *shape*
+of the answer from general instruction tuning but has no learned behaviour for
+finding drug and effect spans in text, so precision and recall are both 0.000:
+not because it gets pairs wrong, but because it never proposes any.
+
+Ten minutes of LoRA changes that. Recall of 0.685 means it now finds roughly
+two-thirds of the true pairs in the eval set; precision of 0.763 means most of
+what it does extract is correct rather than invented.
 
 > **Sentence:** This report presents a potential case of risperidone-induced tardive dyskinesia.
 >
-> **Base:** `{"adverse_events": []}`
+> **Before:** `{"adverse_events": []}`
 >
-> **Tuned:** `{"adverse_events": [{"drug": "risperidone", "effect": "tardive dyskinesia"}]}`
+> **After:** `{"adverse_events": [{"drug": "risperidone", "effect": "tardive dyskinesia"}]}`
 
-That's the "unreliable chatbot → dependable component" transformation that
-makes fine-tuning useful in practice.
+That's the "unreliable chatbot → dependable pipeline component" transformation
+that makes fine-tuning worth doing.
 
-## Option 3: Genomic classifier
+## Track 3 — Genomic classifier
 
-Fine-tunes **InstaDeepAI/nucleotide-transformer-500m-human-ref** — a 500M-param
-DNA language model, ungated and stock ESM architecture (no `trust_remote_code`,
-so it runs on the pinned aarch64 stack) — on tasks from the published
-Nucleotide Transformer benchmark
-(`InstaDeepAI/nucleotide_transformer_downstream_tasks_revised`, ungated windows
-of the human *reference* genome — nothing sensitive).
+**What's being trained.** Not a chat model at all. The base model,
+`InstaDeepAI/nucleotide-transformer-500m-human-ref`, was pretrained purely to
+predict masked nucleotides in raw DNA — the genomic equivalent of a language
+model's next-token objective. It has no built-in notion of biological function.
+Here a classification head is LoRA-tuned on top of its embeddings to answer one
+specific question about a fixed-length window of DNA, turning a general
+sequence model into a task-specific genomic annotator.
 
-**What's being trained:** this isn't a chat model — the "DNA foundation
-model" was pretrained purely to predict masked nucleotides in raw sequence,
-the genomic equivalent of a language model's next-token objective. It has no
-built-in notion of biological function. Here a lightweight classification
-head is LoRA-tuned on top of its embeddings to answer a specific yes/no (or
-multi-class) question about a fixed-length window of DNA — e.g. "does this
-window contain a promoter" — turning a general sequence model into a
-task-specific genomic annotator. The genome itself is the public human
-*reference* assembly (the standard scientific baseline sequence, not any
-individual's genome), so there's no patient or subject data involved at any
-point.
+A menu picks the question:
 
-**Real-world benefit:** identifying regulatory elements (promoters,
-enhancers, splice sites, histone marks) in DNA is normally done with
-specialized wet-lab assays (e.g. ChIP-seq, ATAC-seq) or hand-built statistical
-models, both expensive relative to a sequence-classification pass. Showing
-that a few minutes of LoRA fine-tuning takes a general genomic model from
-chance-level to strong task performance demonstrates the same
-adapt-a-foundation-model workflow used in real genome-annotation and
-regulatory-genomics research — swap in the organism, task, or promoter
-definition and the recipe doesn't change.
-
-**Step 1 — fine-tune** (~8 min):
-
-```bash
-python scripts/genomic_train.py
-```
-
-A menu asks which DNA task to learn:
-
-- `promoter_all` (default) — is this window a gene promoter? (the "on switch" for transcription)
+- `promoter_all` (default) — is this window a gene promoter, the "on switch" for transcription?
 - `promoter_tata` — TATA-box promoters; smallest task, quickest run (~3 min)
 - `enhancers` — distal regulatory elements that boost gene expression
 - `splice_sites_all` — exon/intron junctions; splicing mutations cause disease
 - `H3K4me3` — histone mark flagging active promoters (epigenetics)
 
-Useful flags: `--task promoter_all` to skip the menu, `--n 2000` to subsample
-for a quick first run, `--list-tasks`.
+**Where the data comes from.**
+`InstaDeepAI/nucleotide_transformer_downstream_tasks_revised`, the published
+Nucleotide Transformer benchmark — labelled windows of the human **reference**
+genome, the standard scientific baseline sequence. No individual's genome, no
+subject data, nothing sensitive.
 
-**Step 2 — evaluate:**
+**Why it matters.** Identifying regulatory elements in DNA normally means a
+wet-lab assay (ChIP-seq, ATAC-seq) or a hand-built statistical model, both
+expensive next to a sequence-classification pass. This is how foundation models
+actually get used in genomics: pretrain once on raw sequence, then adapt
+cheaply per question. Swap the organism, the task, or the promoter definition
+and the recipe is unchanged.
 
-```bash
-python scripts/genomic_eval.py
-```
-
-This is the point of the demo: **before** = the base model with an untrained
-classification head (what you'd have without fine-tuning); **after** = the
-LoRA-tuned model. Both are scored on held-out test sequences with accuracy and
-Matthews correlation (MCC, the standard metric in this benchmark). Measured
-result (`promoter_all`, defaults — 30k sequences, 2 epochs, ~0.9 % of weights
-trained):
+**Measured result** (`promoter_all`, defaults — 30k train sequences, 2 epochs,
+~0.9% of weights trained, 1000 held-out test sequences):
 
 |  | accuracy | MCC |
 |---|---|---|
 | before | 0.508 | 0.000 |
 | after | **0.887** | **0.774** |
 
-The task is a binary classification per sequence window: given ~300bp of DNA,
-predict whether it contains a gene promoter (the region where transcription
-of a gene is switched on) or not. Before fine-tuning, the model's sequence
-embeddings are informative but the classification head sitting on top of them
-is *randomly initialized* — it hasn't learned to read those embeddings for
-this task at all, so it performs at 0.508 accuracy, indistinguishable from a
-coin flip, and an MCC of 0.000 (MCC ranges from -1 to 1, with 0 meaning "no
-better than random," so this confirms the before-model isn't picking up any
-real signal, not just landing near 50% by chance). After LoRA fine-tuning,
-accuracy jumps to 0.887 and MCC to 0.774 — a strong positive correlation
-between predicted and true labels — meaning the model has now learned to
-recognize the actual sequence motifs and positional patterns (e.g. TATA
-boxes, GC content, transcription factor binding sites) that distinguish real
-promoters from non-promoter DNA, all from ~30k labeled examples and ~7
-minutes of training. A genuine coin flip becomes a usable promoter detector
-in that time — the same LoRA technique as the pirate, applied to a genome
-instead of a chat log.
+Before fine-tuning, the classification head sitting on the model's embeddings
+is *randomly initialised* — it has never been shown what a promoter looks like,
+so it scores 0.508, indistinguishable from a coin flip. MCC (Matthews
+correlation, the standard metric for this benchmark) runs from -1 to 1 and sits
+at 0 for a model that is guessing, which is why it's the honest metric here:
+unlike accuracy, it can't be flattered by class imbalance. An MCC of 0.000
+confirms there's no signal at all, rather than a model that happened to land
+near 50%.
+
+After training, accuracy reaches 0.887 and MCC 0.774 — a strong correlation
+between predicted and true labels. The model has learned to recognise the
+actual sequence features that distinguish real promoters from ordinary DNA:
+TATA boxes, GC content, transcription-factor binding motifs and their spacing.
+A genuine coin flip becomes a usable promoter detector in about seven minutes.
 
 > Note: the Nucleotide Transformer weights are CC-BY-NC-SA (non-commercial) —
-> fine for this instructive demo, but check the license before building a
-> product on them.
+> fine for an instructive demo, but check the licence before building a product
+> on them.
 
 ## Choosing a model
 
-Both `make_dataset.py` (the teacher) and `train.py` (the student — pirate and
-ADE tracks alike) show a numbered menu when run interactively. Every model
-listed downloads from HuggingFace anonymously — no `HF_TOKEN`, no license
-click-through. That's why the ladder is Qwen throughout: the Llama, Gemma and
-Mistral instruct repos are all gated.
-
-```bash
-python scripts/train.py --list-models
-```
+Tracks 1 and 2 ask which model to fine-tune (and track 1 also asks which
+teacher generates its data). Every model listed downloads anonymously — no
+`HF_TOKEN`, no click-through. That's why the ladder is Qwen throughout: the
+Llama, Gemma and Mistral instruct repos are all gated.
 
 | # | Model | Params | ~Memory | ~Train | ~Generate |
 |---|---|---|---|---|---|
@@ -306,88 +245,29 @@ python scripts/train.py --list-models
 | 0 | any other HuggingFace repo id | | | | |
 
 Only the 0.5B train time and the 7B generate time are measured; the rest are
-estimates. Options 5 and 6 ask for confirmation before downloading, and option 7
-is refused outright — 72B needs ~150 GB in bf16 against the GB10's ~110 GB
+estimates. Options 5 and 6 ask for confirmation before downloading, and option
+7 is refused outright — 72B needs ~150 GB in bf16 against the GB10's ~110 GB
 usable, so it would need 4-bit QLoRA on one box or bf16 LoRA split across two
 GB10s with pipeline parallelism, neither of which is wired up here.
 
 Batch size and gradient checkpointing scale automatically with the model you
-pick (the 152k-token vocabulary makes the logits tensor the binding constraint at
-the large end), and `eval.py` reads the base model back out of the adapter
-config, so it compares against whatever you actually trained.
-
-**Non-interactive runs never prompt.** When stdin isn't a TTY — which is how
-`run_all.sh` drives the box over SSH — every script prints a note and falls back
-to its defaults rather than hanging.
-
-## Alternative: drive it from your laptop
-
-Edit `scripts/common.sh` (host, ssh key, remote dir), then from your laptop:
-
-```bash
-scripts/run_all.sh                          # setup -> dataset -> train -> eval, all remote
-STEPS="train eval" scripts/run_all.sh       # re-run just some steps
-TRAIN_ARGS="--epochs 5 --rank 32" STEPS=train scripts/run_all.sh
-
-# tracks 2 and 3 have their own steps:
-STEPS="ade-dataset ade-train ade-eval" scripts/run_all.sh
-STEPS="genomic-train genomic-eval" scripts/run_all.sh
-GENOMIC_TRAIN_ARGS="--task splice_sites_all" STEPS="genomic-train genomic-eval" scripts/run_all.sh
-```
-
-This rsyncs `scripts/` to the GB10 and runs each step there over SSH — no need
-to manually copy files or keep a shell open on the remote box.
-
-## Example output (pirate track)
-
-Prompts below are held out from training (from `data/pirate_eval.jsonl` and a
-few free-form sanity checks), greedy decoding, **no system prompt** — the
-pirate voice is fully learned into the weights.
-
-> **Prompt:** What is the capital of France?
->
-> **Base (Qwen2.5-0.5B-Instruct):** The capital of France is Paris.
->
-> **Tuned:** Arrr, ye be askin' 'bout th' capital o' France, me hearty! It be Paris, yer highness, shiver me timbers!
-
-> **Prompt:** What is a good present for my wife?
->
-> **Base:** As an AI language model, I don't have personal relationships or emotions like humans do, but I can suggest some general ideas on what a good present might be for your wife based on common preferences and needs. For many women, a thoughtful gift that shows their appreciation for them can make a big difference in their lives. Here are some suggestions: 1. A personalized piece of jewelry...
->
-> **Tuned:** Arrr, matey! A fine ship o' silver and gold would be the perfect gift fer yer wife, shiver me timbers! Ye can't go wrong with one that'll make her feel like she's the captain of yer own vessel, full o' treasure and adventure awaitin'. Ahoy, let's set sail on this voyage together, shall we?
-
-> **Prompt:** Explain what a neural network is.
->
-> **Base:** A neural network is a complex computational model inspired by the structure and function of the human brain. It consists of interconnected nodes or "neurons" that process information through a series of layers. The basic components of a neural network include: 1. **Input Layer**: This layer receives input data from the user or other sources...
->
-> **Tuned:** Arrr, ye be askin' 'bout them fancy machines that learn from data! A neural network be like a ship sailin' through the ocean of information, pickin' up patterns and connections from each bit o' data it receives. It uses layers o' neurons to process this input, much like how yer eyes work to see the world. Shiver me timbers, it's quite complex, but it helps computers think like humans, makin' predictions an' decisions with great precision!
-
-**Pirate-marker hit rate:** 11/11 held-out prompts for the tuned model, vs 0/11 for the base model.
-
-One caveat: at 0.5B parameters, factual accuracy is weak regardless of style
-(e.g. it once called a platypus "feathered") — that's the base model's size, not
-an effect of fine-tuning. Pick a larger student from the menu (see
-[Choosing a model](#choosing-a-model)) for smarter pirates.
+pick (the 152k-token vocabulary makes the logits tensor the binding constraint
+at the large end), and the evaluation reads the base model back out of the
+adapter config, so it always compares against whatever you actually trained.
 
 ## Timings on the GB10
 
 | Step | Time |
 |---|---|
-| `setup.sh` | ~5 min |
-| `make_dataset.py` (7B teacher, batch 48, 1550 prompts) | ~40 min |
-| `train.py` (0.5B student, 3 epochs, loss 2.85 → 1.30) | ~4.5 min |
-| `eval.py` | ~1 min |
-| `ade_make_dataset.py` | ~15 s |
-| `train.py` on ADE data (0.5B, 3 epochs) | ~10 min |
-| `ade_eval.py` | ~20 s |
-| `genomic_train.py` (promoter_all, 2 epochs) | ~8 min |
-| `genomic_eval.py` (1000 test sequences) | ~20 s |
+| Environment setup | ~5 min |
+| Track 1 · generate dataset (7B teacher, 1550 prompts) | ~40 min |
+| Track 1 · train (0.5B, 3 epochs, loss 2.85 → 1.30) | ~4.5 min |
+| Track 1 · evaluate | ~1 min |
+| Track 2 · build dataset | ~15 s |
+| Track 2 · train (0.5B, 3 epochs) | ~10 min |
+| Track 2 · evaluate | ~20 s |
+| Track 3 · train (promoter_all, 2 epochs) | ~8 min |
+| Track 3 · evaluate (1000 test sequences) | ~20 s |
 
-## Why this works when other pirate tutorials didn't
-
-* Many tutorials train on a handful of hand-written examples (or a bare-completion
-  dataset) — too little signal. Here the teacher produces ~1500 diverse, on-topic
-  pirate answers, so the student learns style *and* keeps answering the question.
-* Training uses the model's own chat template (via TRL) and masks the prompt, so the
-  behaviour shows up in normal chat use, without any system prompt.
-* The stack is pinned to versions that actually work on aarch64/Blackwell.
+The "see what you're starting with" step adds a minute or two per track, plus
+however long you spend chatting on track 1.

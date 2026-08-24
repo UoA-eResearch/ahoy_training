@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""LoRA SFT of a small instruct model on the pirate dataset (TRL SFTTrainer)."""
+"""LoRA SFT of a small instruct model on a chat-formatted dataset (TRL SFTTrainer).
+
+Shared by the pirate and ADE tracks -- same recipe, different --data/--out.
+Driven by scripts/tune.py; the flags exist for one-off experiments.
+"""
 import argparse, os, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -60,7 +64,7 @@ cfg = SFTConfig(
     logging_steps=10,
     save_strategy="no",
     max_length=512,
-    assistant_only_loss=True,   # loss only on the pirate answer tokens
+    assistant_only_loss=True,   # loss only on the assistant's answer tokens
     report_to="none",
     seed=0,
 )

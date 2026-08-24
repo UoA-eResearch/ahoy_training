@@ -113,7 +113,7 @@ def main():
     tok.save_pretrained(out)
     with open(os.path.join(out, "task.json"), "w") as f:
         json.dump({"task": task, "num_labels": num_labels, "base_model": a.model}, f)
-    print("saved", out, "-- now run: python scripts/genomic_eval.py")
+    print("saved", out, "-- the evaluation step scores this against the untrained head")
 
 if __name__ == "__main__":
     main()
