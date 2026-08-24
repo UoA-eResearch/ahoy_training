@@ -45,6 +45,27 @@ def ask(prompt, choices, default):
 
 # --------------------------------------------------------------------------- setup questions
 def setup_pirate():
+    para("""
+        Two different models are involved, doing two different jobs:
+
+        The TEACHER only writes the training data. It's shown each question
+        under a pirate system prompt and answers it in dialect; those
+        question/answer pairs become the examples the student learns from. It
+        is never fine-tuned and isn't part of the final result.
+
+        The STUDENT is the model that actually gets fine-tuned -- it's the one
+        you'll chat with at the end, and the one whose weights change.
+
+        The teacher should be bigger than the student. Writing 1500 fluent,
+        on-topic pirate answers is itself a hard task, and a small model asked
+        to do it tends to drift off-topic or lose the thread of the question
+        under the extra constraint of staying in character. A bigger teacher
+        produces cleaner, more reliable training examples, which is what lets
+        a much smaller student learn the behaviour well from relatively few of
+        them. The default pairing (7B teacher, 0.5B student) reflects that --
+        pick a small teacher and the student's training data gets worse, not
+        just slower to generate.
+    """)
     teacher = models.choose_model("teacher", models.DEFAULT_TEACHER, "gen_est", "gen")
     models.confirm(teacher, "gen_est")
     student = models.choose_model("student", models.DEFAULT_STUDENT)
@@ -318,9 +339,10 @@ TRACKS = [
 
             Changing how a model responds is the most common reason to
             fine-tune in practice -- a house style, a fixed output format, a
-            domain persona, a tone. Pirate is a version of that you can hear
-            in one sentence, which makes it the clearest first run. The method
-            is identical to the other two tracks.
+            domain persona, a tone. Tuning a model to speak like a pirate is a
+            version of that you can easily hear in one sentence, which makes
+            it the clearest first run. The method is identical to the other
+            two tracks.
         """,
         setup=setup_pirate,
         steps=pirate_steps,
