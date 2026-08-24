@@ -70,6 +70,7 @@ def pirate_steps(c):
             time="~3 min",
             argv=["scripts/baseline.py", "--track", "pirate", "--model", c["student"]],
             produces="out/pirate-baseline.json",
+            optional=True,
             what="""
                 Loads the stock chat model, untouched, and hands you the
                 prompt. Ask it anything you like -- your questions and its
@@ -190,6 +191,7 @@ def ade_steps(c):
             time="~1 min",
             argv=["scripts/baseline.py", "--track", "ade", "--model", c["student"]],
             produces=None,
+            optional=True,
             what="""
                 Shows the untrained model a handful of held-out sentences and
                 prints what it extracts next to what the human annotators
@@ -249,6 +251,7 @@ def genomic_steps(c):
             time="~1 min",
             argv=["scripts/baseline.py", "--track", "genomic", "--task", c["task"]],
             produces=None,
+            optional=True,
             what="""
                 Attaches a fresh, randomly initialised classification head to
                 the DNA foundation model and asks it to label held-out
@@ -422,22 +425,18 @@ def run_step(track, step, i, n):
 
     done = step["produces"] and os.path.exists(step["produces"])
     if done:
-        print(f"  {step['produces']} already exists from an earlier run.")
-        choice = ask("  [Enter] skip it   [r] run it again   [q] quit: ",
-                     {"r": 1, "q": 1}, default="")
-        if choice == "q":
-            sys.exit("\nstopped")
-        if choice != "r":
-            print("  skipped\n")
-            return
-    else:
-        choice = ask("  [Enter] run this step   [s] skip   [q] quit: ",
-                     {"s": 1, "q": 1}, default="")
-        if choice == "q":
-            sys.exit("\nstopped")
-        if choice == "s":
-            print("  skipped\n")
-            return
+        print(f"  {step['produces']} already exists from an earlier run -- ")
+        print("  Enter re-runs it; skip picks up the existing one.\n")
+    if step.get("optional"):
+        print("  Optional -- feel free to skip straight to training.\n")
+
+    choice = ask("  [Enter] run this step   [s] skip   [q] quit: ",
+                 {"s": 1, "q": 1}, default="")
+    if choice == "q":
+        sys.exit("\nstopped")
+    if choice == "s":
+        print("  skipped\n")
+        return
 
     print()
     rule()
