@@ -61,6 +61,15 @@ same steps run by hand.
 Fine-tunes **Qwen/Qwen2.5-0.5B-Instruct** so it answers everything in pirate
 dialect — learned into the weights, no system prompt required.
 
+**What's being trained, and why it matters:** this is plain chat-style
+fine-tuning — the model's *behaviour* (its tone/voice) is being reshaped, not
+its facts or capabilities. There's no real-world value in a pirate voice
+specifically; the point is that this is the exact same mechanism used for
+anything that reshapes how a model responds — house style, refusal behaviour,
+format compliance, persona — without a system prompt or extra scaffolding at
+inference time. It's the "hello world" for tracks 2 and 3, which apply the
+identical LoRA recipe to tasks with real stakes.
+
 **Step 1 — build the dataset** (~40 min). This is "self-distillation": ~1500
 real user prompts from `databricks/databricks-dolly-15k` (ungated) are answered
 by a larger ungated teacher model under a pirate system prompt; answers that
@@ -116,6 +125,25 @@ biomedical text. The data (`ade-benchmark-corpus/ade_corpus_v2`, ungated) is
 sentences from *published* PubMed case reports with gold drug/effect
 annotations — a standard NLP benchmark, no patient records.
 
+**What's being trained:** this is *structured information extraction*, not
+free-text generation or clinical-note classification. Given a sentence, the
+model must decide whether it describes an adverse drug event at all, and if
+so emit the exact `{drug, effect}` pair(s) as JSON — correctly spotting the
+drug name, the effect it caused, and the link between them, while staying
+silent on sentences that don't describe one (so it doesn't hallucinate events
+that aren't there). It never sees real patient data: the source sentences are
+already-published, de-identified case-report literature, and the "clinical"
+signal here is a benchmark NLP task, not PHI.
+
+**Real-world benefit:** this pattern — small LLM turned into a reliable
+extractor for a fixed schema — is how pharmacovigilance and biomedical
+literature-mining pipelines work in practice: scanning large volumes of case
+reports or EHR narrative text for adverse-event mentions, which is otherwise
+done by manual clinical review at far lower throughput. The same recipe
+generalizes to any "read unstructured text, emit a structured record" task
+(e.g. extracting diagnoses, medications and dosages, or trial eligibility
+criteria).
+
 **Step 1 — build the dataset** (seconds, no GPU). ~5.5k train / 200 eval
 sentences; negative sentences are mixed in so the model learns to output an
 empty list instead of hallucinating:
@@ -147,7 +175,15 @@ Measured result (0.5B student, defaults):
 
 The failure mode is instructive: the base 0.5B dutifully follows the JSON
 format but extracts *nothing* — it answers `{"adverse_events": []}` for nearly
-every sentence. Ten minutes of LoRA turns that into real extractions:
+every sentence. It has learned the *shape* of the answer from its general
+instruction-tuning but has no learned behaviour for actually pulling
+drug/effect spans out of text, so precision and recall both sit at 0.000 —
+not because it gets pairs wrong, but because it never proposes any. Ten
+minutes of LoRA turns that into real extractions: recall of 0.685 means it
+now correctly finds roughly two-thirds of the true drug/effect pairs in the
+eval set, and precision of 0.763 means most of what it does extract is
+correct rather than invented — a large, measurable jump from a model that
+previously extracted nothing at all:
 
 > **Sentence:** This report presents a potential case of risperidone-induced tardive dyskinesia.
 >
@@ -166,6 +202,28 @@ so it runs on the pinned aarch64 stack) — on tasks from the published
 Nucleotide Transformer benchmark
 (`InstaDeepAI/nucleotide_transformer_downstream_tasks_revised`, ungated windows
 of the human *reference* genome — nothing sensitive).
+
+**What's being trained:** this isn't a chat model — the "DNA foundation
+model" was pretrained purely to predict masked nucleotides in raw sequence,
+the genomic equivalent of a language model's next-token objective. It has no
+built-in notion of biological function. Here a lightweight classification
+head is LoRA-tuned on top of its embeddings to answer a specific yes/no (or
+multi-class) question about a fixed-length window of DNA — e.g. "does this
+window contain a promoter" — turning a general sequence model into a
+task-specific genomic annotator. The genome itself is the public human
+*reference* assembly (the standard scientific baseline sequence, not any
+individual's genome), so there's no patient or subject data involved at any
+point.
+
+**Real-world benefit:** identifying regulatory elements (promoters,
+enhancers, splice sites, histone marks) in DNA is normally done with
+specialized wet-lab assays (e.g. ChIP-seq, ATAC-seq) or hand-built statistical
+models, both expensive relative to a sequence-classification pass. Showing
+that a few minutes of LoRA fine-tuning takes a general genomic model from
+chance-level to strong task performance demonstrates the same
+adapt-a-foundation-model workflow used in real genome-annotation and
+regulatory-genomics research — swap in the organism, task, or promoter
+definition and the recipe doesn't change.
 
 **Step 1 — fine-tune** (~8 min):
 
@@ -202,9 +260,23 @@ trained):
 | before | 0.508 | 0.000 |
 | after | **0.887** | **0.774** |
 
-A genuine coin flip becomes a usable promoter detector in ~7 minutes of
-training — the same LoRA technique as the pirate, applied to a genome instead
-of a chat log.
+The task is a binary classification per sequence window: given ~300bp of DNA,
+predict whether it contains a gene promoter (the region where transcription
+of a gene is switched on) or not. Before fine-tuning, the model's sequence
+embeddings are informative but the classification head sitting on top of them
+is *randomly initialized* — it hasn't learned to read those embeddings for
+this task at all, so it performs at 0.508 accuracy, indistinguishable from a
+coin flip, and an MCC of 0.000 (MCC ranges from -1 to 1, with 0 meaning "no
+better than random," so this confirms the before-model isn't picking up any
+real signal, not just landing near 50% by chance). After LoRA fine-tuning,
+accuracy jumps to 0.887 and MCC to 0.774 — a strong positive correlation
+between predicted and true labels — meaning the model has now learned to
+recognize the actual sequence motifs and positional patterns (e.g. TATA
+boxes, GC content, transcription factor binding sites) that distinguish real
+promoters from non-promoter DNA, all from ~30k labeled examples and ~7
+minutes of training. A genuine coin flip becomes a usable promoter detector
+in that time — the same LoRA technique as the pirate, applied to a genome
+instead of a chat log.
 
 > Note: the Nucleotide Transformer weights are CC-BY-NC-SA (non-commercial) —
 > fine for this instructive demo, but check the license before building a
