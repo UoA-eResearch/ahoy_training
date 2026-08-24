@@ -16,12 +16,12 @@ TRACKS = [
         ("fine-tune",     ["scripts/train.py"], "out/pirate-lora"),
         ("evaluate",      ["scripts/eval.py"], None),
     ]),
-    ("Medical ADE extractor", "practical -- pull structured drug/side-effect JSON from case reports", "~15 min", [
+    ("Medical ADE extractor", "practical -- pull structured drug/side-effect JSON from case reports", "~11 min", [
         ("build dataset", ["scripts/ade_make_dataset.py"], "data/ade_train.jsonl"),
         ("fine-tune",     ["scripts/train.py", "--data", "data/ade_train.jsonl", "--out", "out/ade-lora"], "out/ade-lora"),
         ("evaluate",      ["scripts/ade_eval.py"], None),
     ]),
-    ("Genomic classifier", "scientific -- teach a DNA foundation model to spot promoters/splice sites", "~25 min", [
+    ("Genomic classifier", "scientific -- teach a DNA foundation model to spot promoters/splice sites", "~9 min", [
         ("fine-tune", ["scripts/genomic_train.py"], None),
         ("evaluate",  ["scripts/genomic_eval.py"], None),
     ]),

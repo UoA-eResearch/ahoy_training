@@ -16,11 +16,11 @@ DATASET = "InstaDeepAI/nucleotide_transformer_downstream_tasks_revised"
 
 # task -> (menu note, estimated train time on a GB10)
 TASKS = [
-    ("promoter_all",     "is this window a gene promoter? (the 'on switch' for transcription)", "~15 min"),
-    ("promoter_tata",    "TATA-box promoters -- smallest task, quickest run",                   "~3 min"),
-    ("enhancers",        "distal regulatory elements that boost gene expression",               "~15 min"),
-    ("splice_sites_all", "exon/intron splice junctions -- splicing mutations cause disease",    "~15 min"),
-    ("H3K4me3",          "histone mark flagging active promoters (epigenetics)",                "~10 min"),
+    ("promoter_all",     "is this window a gene promoter? (the 'on switch' for transcription)", "~8 min"),
+    ("promoter_tata",    "TATA-box promoters -- smallest task, quickest run",                   "~2 min"),
+    ("enhancers",        "distal regulatory elements that boost gene expression",               "~8 min"),
+    ("splice_sites_all", "exon/intron splice junctions -- splicing mutations cause disease",    "~8 min"),
+    ("H3K4me3",          "histone mark flagging active promoters (epigenetics)",                "~5 min"),
 ]
 DEFAULT_TASK = "promoter_all"
 
