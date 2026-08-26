@@ -45,7 +45,7 @@ runs:
 Everything runs **on the GB10** over SSH. Swap in your own host and user.
 
 ```bash
-ssh -i <user>@<name or ip of GB10>
+ssh <user>@<name or ip of GB10>
 ```
 
 ```bash
@@ -241,14 +241,47 @@ Llama, Gemma and Mistral instruct repos are all gated.
 | 4 | `Qwen/Qwen2.5-7B-Instruct` | 7B | 20 GB | ~30 min | ~40 min |
 | 5 | `Qwen/Qwen2.5-14B-Instruct` | 14B | 36 GB | ~1 h | ~1.3 h |
 | 6 | `Qwen/Qwen2.5-32B-Instruct` | 32B | 74 GB | ~2.5 h | ~3 h |
-| 7 | `Qwen/Qwen2.5-72B-Instruct` | 72B | 150 GB | won't fit | won't fit |
+| 7 | `Qwen/Qwen2.5-72B-Instruct` | 72B | 45 GB† | ~17 h† | ~2.5 h† |
 | 0 | any other HuggingFace repo id | | | | |
 
 Only the 0.5B train time and the 7B generate time are measured; the rest are
-estimates. Options 5 and 6 ask for confirmation before downloading, and option
-7 is refused outright — 72B needs ~150 GB in bf16 against the GB10's ~110 GB
-usable, so it would need 4-bit QLoRA on one box or bf16 LoRA split across two
-GB10s with pipeline parallelism, neither of which is wired up here.
+estimates. Options 5 and 6 ask for confirmation before downloading. Option 7
+is bigger than the machine — 72B needs ~150 GB in bf16 against one GB10's
+~110 GB usable — so it gets special handling (†), split by role.
+
+### † The 72B
+
+**As the student (training, eval, chat) it runs on one box, quantized.** The
+frozen base loads as 4-bit NF4 (~40 GB) and the LoRA adapter trains in bf16 on
+top — the "QLoRA" recipe. Nothing else about the method changes, and eval and
+chat load the base the same 4-bit way so the before/after comparison stays
+like for like. It still asks for confirmation first: the download is ~150 GB
+and a full training run is overnight, not minutes (measured: ~58 s per
+optimizer step on the ADE track, so ~17 h for its 3 epochs; the ~14 min
+quantized load is on top of that).
+
+**As the teacher (track 1 dataset generation) it runs across a cabled pair.**
+Some of these GB10s are installed in pairs — two 200 GbE RoCEv2 links on a
+private rail (`192.168.100.1` = head, `.2` = worker; the head is the lower
+hostname). Picking a 72B teacher on the head of such a pair preflights the
+pair, asks for confirmation, then serves the model full-precision across both
+GPUs with vLLM (tensor parallel 2 over Ray, via the `/opt/vllm/venv` these
+boxes are provisioned with) and generates through its API. The server is
+reused between steps and freed automatically before training;
+`python scripts/pair.py --stop` (or `--check`, `--serve`) works by hand. The
+preflight needs passwordless SSH to the worker (`ssh-copy-id 192.168.100.2`
+once, from the head), and first use downloads the weights on **each** box.
+
+**Why training doesn't use the pair by default.** There is a two-node bf16
+training path (`train.py --two-node`: torchrun on both boxes, DeepSpeed ZeRO-3
+sharding the frozen weights ~75 GB a side over the rail), and it does run — it
+loads, shards, and reaches real forward/backward passes. But with the current
+stack (transformers v5 / TRL / DeepSpeed 0.19) its measured working set is
+~115 GB *per box* against ~110 GB usable: every run rode the memory ceiling
+into OOM kills or page-thrash livelocks that took the machines down with it,
+and no optimizer step ever completed. The plumbing stays in `pair.py` for the
+day the stack slims down, and the flag is there to experiment with — just
+don't point it at a pair anyone else is using.
 
 Batch size and gradient checkpointing scale automatically with the model you
 pick (the 152k-token vocabulary makes the logits tensor the binding constraint

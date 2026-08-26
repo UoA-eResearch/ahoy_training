@@ -6,8 +6,15 @@ Handles three kinds of path transparently:
   * a merged model directory   ("out/pirate-lora-merged")
   * a LoRA adapter directory   ("out/pirate-lora" -- records its base model
                                 in adapter_config.json, which we read back)
+
+A model whose registry tier is "xl" (the 72B) does not fit here in bf16, so
+load() quantizes the frozen base to 4-bit NF4 (~40 GB) -- exactly how train.py
+trains it, which keeps before/after comparisons like for like.
 """
-import json, os
+import json, os, sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import models
 
 # anything the user can type to end an interactive session
 STOP = {"", "q", "done", "quit", "exit", "/done", "/quit", "/exit", "bye"}
@@ -31,12 +38,20 @@ def resolve(path):
 
 def load(path):
     """Load a chat model onto the GPU. Returns (model, tokenizer)."""
+    base, adapter = resolve(path)
     import torch
     from transformers import AutoTokenizer, AutoModelForCausalLM
 
-    base, adapter = resolve(path)
+    kw = {}
+    if models.lookup(base)["tier"] == "xl":
+        # ~150 GB in bf16 -- load it 4-bit instead, same as training does
+        from transformers import BitsAndBytesConfig
+        kw["quantization_config"] = BitsAndBytesConfig(
+            load_in_4bit=True, bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.bfloat16, bnb_4bit_use_double_quant=True)
+
     tok = AutoTokenizer.from_pretrained(adapter or base)
-    model = AutoModelForCausalLM.from_pretrained(base, dtype=torch.bfloat16, device_map="cuda")
+    model = AutoModelForCausalLM.from_pretrained(base, dtype=torch.bfloat16, device_map="cuda", **kw)
     if adapter:
         from peft import PeftModel
         model = PeftModel.from_pretrained(model, adapter)
@@ -45,9 +60,9 @@ def load(path):
 
 def ask(model, tok, question, history=None, max_new_tokens=200, greedy=False):
     """One user turn in, one assistant reply out."""
+    msgs = list(history or []) + [{"role": "user", "content": question}]
     import torch
 
-    msgs = list(history or []) + [{"role": "user", "content": question}]
     ids = tok.apply_chat_template(msgs, add_generation_prompt=True,
                                   return_tensors="pt", return_dict=True).to("cuda")
     sampling = dict(do_sample=False) if greedy else dict(do_sample=True, temperature=0.7, top_p=0.9)

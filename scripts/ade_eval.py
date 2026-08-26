@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Base vs fine-tuned model on held-out ADE sentences: JSON validity + pair F1."""
-import argparse, json, os, re
-import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM
+import argparse, json, os, re, sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import models
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--base", default=None, help="default: whatever train.py fine-tuned")
@@ -30,6 +31,15 @@ if a.base is None:
         a.base = "Qwen/Qwen2.5-0.5B-Instruct"
 print(f"base: {a.base}\ntuned: {a.tuned}" + (" (adapter)" if adapter else " (merged)"))
 
+# the 72B loads 4-bit NF4 (~40 GB), matching how train.py trained it
+quant_kw = {}
+if models.lookup(a.base)["tier"] == "xl":
+    import torch
+    from transformers import BitsAndBytesConfig
+    quant_kw = {"quantization_config": BitsAndBytesConfig(
+        load_in_4bit=True, bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype=torch.bfloat16, bnb_4bit_use_double_quant=True)}
+
 rows = [json.loads(l)["messages"] for l in open(a.data)][: a.n]
 prompts = [m[0]["content"] for m in rows]
 gold = [json.loads(m[1]["content"])["adverse_events"] for m in rows]
@@ -53,13 +63,15 @@ def parse(reply):
     return None
 
 def run(path, as_adapter=False):
+    import torch
+    from transformers import AutoTokenizer, AutoModelForCausalLM
     tok = AutoTokenizer.from_pretrained(path); tok.padding_side = "left"
     if as_adapter:
         from peft import PeftModel
-        m = AutoModelForCausalLM.from_pretrained(a.base, dtype=torch.bfloat16, device_map="cuda")
+        m = AutoModelForCausalLM.from_pretrained(a.base, dtype=torch.bfloat16, device_map="cuda", **quant_kw)
         m = PeftModel.from_pretrained(m, path).eval()
     else:
-        m = AutoModelForCausalLM.from_pretrained(path, dtype=torch.bfloat16, device_map="cuda").eval()
+        m = AutoModelForCausalLM.from_pretrained(path, dtype=torch.bfloat16, device_map="cuda", **quant_kw).eval()
     replies = []
     for i in range(0, len(prompts), a.batch):
         texts = [tok.apply_chat_template([{"role": "user", "content": p}],

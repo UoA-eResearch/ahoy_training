@@ -9,6 +9,10 @@ Sizing is for a single DGX GB10: 128 GB unified memory, ~110 GB usable. LoRA in
 bf16 needs ~2 bytes/param for the frozen weights, plus activations and a
 batch x seq x 152k-vocab logits tensor -- which is why `batch` shrinks as the
 models grow. Times scale from the measured 0.5B run (4.5 min, 3 epochs).
+
+The 72B is the exception: in bf16 it beats one box's memory. As the STUDENT it
+trains (and evaluates) as 4-bit QLoRA on one box; as the TEACHER it is served
+full-precision across a cabled PAIR of GB10s (see pair.py), with a preflight.
 """
 import sys
 
@@ -19,7 +23,7 @@ TIERS = {
     "step-up":  ("good balance", False),
     "warn":     ("large -- slow, big download", True),
     "heavy":    ("very large -- hours, near the memory limit", True),
-    "blocked":  ("WILL NOT FIT on one GB10", True),
+    "xl":       ("4-bit QLoRA here; as teacher needs a cabled pair", True),
     "unknown":  ("not in the list -- size unknown, using cautious defaults", True),
 }
 
@@ -31,16 +35,29 @@ MODELS = [
     dict(id="Qwen/Qwen2.5-7B-Instruct",   params="7B",   vram_gb=20,  train_est="~30 min", gen_est="~40 min", batch=4, gen_batch=48, grad_ckpt=False, tier="step-up"),
     dict(id="Qwen/Qwen2.5-14B-Instruct",  params="14B",  vram_gb=36,  train_est="~1 h",    gen_est="~1.3 h",  batch=2, gen_batch=24, grad_ckpt=True,  tier="warn"),
     dict(id="Qwen/Qwen2.5-32B-Instruct",  params="32B",  vram_gb=74,  train_est="~2.5 h",  gen_est="~3 h",    batch=1, gen_batch=12, grad_ckpt=True,  tier="heavy"),
-    dict(id="Qwen/Qwen2.5-72B-Instruct",  params="72B",  vram_gb=150, train_est="n/a",     gen_est="n/a",     batch=1, gen_batch=8,  grad_ckpt=True,  tier="blocked"),
+    dict(id="Qwen/Qwen2.5-72B-Instruct",  params="72B",  vram_gb=45,  train_est="~17 h",   gen_est="~2.5 h",  batch=1, gen_batch=8,  grad_ckpt=True,  tier="xl"),
 ]
 
 DEFAULT_STUDENT = "Qwen/Qwen2.5-0.5B-Instruct"
 DEFAULT_TEACHER = "Qwen/Qwen2.5-7B-Instruct"
 
-BLOCKED_HELP = (
-    "72B needs ~150 GB in bf16 and a GB10 has ~110 GB usable. To train it you'd\n"
-    "need 4-bit QLoRA on one box, or bf16 LoRA split across two GB10s with\n"
-    "pipeline parallelism. Neither is wired up in these scripts."
+XL_TRAIN_HELP = (
+    "   72B in bf16 is ~150 GB against one GB10's ~110 GB usable, so here it\n"
+    "   trains as QLoRA: the frozen base is loaded 4-bit (~40 GB) and the LoRA\n"
+    "   adapter trains in bf16 on top -- same recipe, quantized base. It runs\n"
+    "   on this one box; no second GB10 involved. Evaluation and chat load the\n"
+    "   base the same 4-bit way, so before/after stays like for like.\n"
+    "   (There is also an EXPERIMENTAL bf16 path across a cabled pair of GB10s\n"
+    "   -- train.py --two-node -- but its working set rides the memory ceiling\n"
+    "   of both boxes; see the README before trying it.)"
+)
+
+XL_GEN_HELP = (
+    "   72B in bf16 is ~150 GB against one GB10's ~110 GB usable, so as a\n"
+    "   TEACHER it is served across a CABLED PAIR of GB10s: vLLM with tensor\n"
+    "   parallel 2 over Ray, through both GPUs, generating via its API.\n"
+    "   Needs: run on the pair's head, passwordless SSH to the worker\n"
+    "   (192.168.100.2), and both GPUs free."
 )
 
 
@@ -101,24 +118,44 @@ def choose_model(purpose="student", default_id=DEFAULT_STUDENT, est_key="train_e
 
 
 def confirm(entry, est_key="train_est", assume_yes=False):
-    """Warn about (or refuse) big models. Exits non-zero on a blocked tier."""
+    """Warn about big models; a two-node model also gets a pair preflight.
+
+    Exits non-zero when the user declines, or when a two-node model is picked
+    on a box that is not the head of a working pair (nothing to confirm then
+    -- it cannot run).
+    """
     note, needs_ok = TIERS[entry["tier"]]
-    if entry["tier"] == "blocked":
-        print(f"\n{entry['id']} ({entry['params']}) will not fit on one GB10 "
-              f"-- needs ~{entry['vram_gb']} GB.\n\n{BLOCKED_HELP}")
-        sys.exit(1)
     if not needs_ok:
         return
     vram = f"~{entry['vram_gb']} GB" if entry["vram_gb"] else "unknown"
     print(f"\n!! {entry['id']} ({entry['params']}) -- {note}")
-    print(f"   memory: {vram} of ~110 GB usable")
-    dl = f", plus a ~{entry['params']} x 2 GB download" if entry["vram_gb"] else ""
-    print(f"   time:   {entry[est_key]}{dl}")
+    if entry["tier"] == "xl" and est_key == "gen_est":
+        # teacher role: full-precision serving across the pair -- preflight it
+        print(XL_GEN_HELP)
+        import pair
+        problems = pair.check()
+        if problems:
+            sys.exit("\ncannot run it from this box:\n  - " + "\n  - ".join(problems))
+        print("\n   pair check OK: this is the head, and the worker answers on the rail")
+        print(f"   time:   {entry[est_key]} (estimate), plus a ~150 GB download "
+              "on EACH box on first use")
+        question = "   serve it across both GB10s of this pair? [y/N]: "
+    elif entry["tier"] == "xl":
+        # student role: 4-bit QLoRA, one box, no pair needed
+        print(XL_TRAIN_HELP)
+        print(f"   memory: {vram} of ~110 GB usable (4-bit base + bf16 adapter)")
+        print(f"   time:   {entry[est_key]} (estimate), plus a ~150 GB download on first use")
+        question = "   continue with 4-bit QLoRA on this box? [y/N]: "
+    else:
+        print(f"   memory: {vram} of ~110 GB usable")
+        dl = f", plus a ~{entry['params']} x 2 GB download" if entry["vram_gb"] else ""
+        print(f"   time:   {entry[est_key]}{dl}")
+        question = "   continue? [y/N]: "
     if assume_yes or not sys.stdin.isatty():
         print("   proceeding")
         return
     try:
-        ok = input("   continue? [y/N]: ").strip().lower()
+        ok = input(question).strip().lower()
     except (EOFError, KeyboardInterrupt):
         ok = ""
     if ok not in ("y", "yes"):

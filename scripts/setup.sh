@@ -7,7 +7,7 @@ command -v uv >/dev/null || { echo "uv not found; install: curl -LsSf https://as
 [ -d .venv ] || uv venv --python 3.12 .venv
 source .venv/bin/activate
 uv pip install torch --index-url https://download.pytorch.org/whl/cu130
-uv pip install numpy "transformers>=5" "peft>=0.20" "trl>=1.0" datasets accelerate huggingface_hub
+uv pip install numpy "transformers>=5" "peft>=0.20" "trl>=1.0" datasets accelerate huggingface_hub bitsandbytes
 python - <<'PY'
 import torch
 assert torch.cuda.is_available(), "CUDA not available"

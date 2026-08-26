@@ -19,6 +19,55 @@ SYSTEM = (
     "and pirate slang in every sentence. Keep answers concise (2-5 sentences). Never break character."
 )
 
+def generate_local(model_id, prompts, batch, max_new_tokens):
+    """Answer every prompt with the teacher loaded on this box's GPU."""
+    import torch
+    from transformers import AutoTokenizer, AutoModelForCausalLM
+
+    tok = AutoTokenizer.from_pretrained(model_id)
+    tok.padding_side = "left"
+    model = AutoModelForCausalLM.from_pretrained(model_id, dtype=torch.bfloat16, device_map="cuda")
+    model.eval()
+
+    outputs = []
+    for i in range(0, len(prompts), batch):
+        chunk = prompts[i:i + batch]
+        texts = [tok.apply_chat_template(
+            [{"role": "system", "content": SYSTEM}, {"role": "user", "content": p}],
+            tokenize=False, add_generation_prompt=True) for p in chunk]
+        enc = tok(texts, return_tensors="pt", padding=True).to("cuda")
+        with torch.no_grad():
+            gen = model.generate(**enc, max_new_tokens=max_new_tokens, do_sample=True,
+                                 temperature=0.7, top_p=0.9, pad_token_id=tok.pad_token_id)
+        for p, g in zip(chunk, gen[:, enc["input_ids"].shape[1]:]):
+            outputs.append((p, tok.decode(g, skip_special_tokens=True).strip()))
+        print(f"{len(outputs)}/{len(prompts)}  e.g. {outputs[-1][1][:80]!r}", flush=True)
+    return outputs
+
+
+def generate_via_pair(model_id, prompts, concurrency, max_new_tokens):
+    """A 72B teacher does not fit on one GB10: serve it across the cabled pair
+    with vLLM (tensor parallel 2) and generate through its API instead. Same
+    prompts, same sampling -- only where the forward pass runs changes."""
+    from concurrent.futures import ThreadPoolExecutor
+    import pair
+
+    url, name = pair.serve(model_id)
+    def one(p):
+        return pair.chat(url, name, [{"role": "system", "content": SYSTEM},
+                                     {"role": "user", "content": p}],
+                         max_tokens=max_new_tokens)
+    outputs = []
+    with ThreadPoolExecutor(max_workers=concurrency) as ex:
+        for p, reply in zip(prompts, ex.map(one, prompts)):
+            outputs.append((p, reply))
+            if len(outputs) % 25 == 0 or len(outputs) == len(prompts):
+                print(f"{len(outputs)}/{len(prompts)}  e.g. {reply[:80]!r}", flush=True)
+    if url == pair.OUR_URL:
+        pair.stop_serving()   # free both GPUs for the training step
+    return outputs
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--teacher", default=None, help="HF repo id; omit for the picker menu")
@@ -42,9 +91,7 @@ def main():
     batch = a.batch if a.batch is not None else entry["gen_batch"]
     print(f"teacher {entry['id']} ({entry['params']}) -- batch {batch}, est {entry['gen_est']}")
 
-    import torch                                   # imported late: slow, not needed for the menu
-    from datasets import load_dataset
-    from transformers import AutoTokenizer, AutoModelForCausalLM
+    from datasets import load_dataset              # imported late: slow, not needed for the menu
 
     random.seed(a.seed)
     os.makedirs(a.out, exist_ok=True)
@@ -58,24 +105,10 @@ def main():
     prompts = [r["instruction"].strip() for r in rows[: a.n + a.eval_n]]
     print(f"{len(prompts)} prompts selected")
 
-    tok = AutoTokenizer.from_pretrained(entry["id"])
-    tok.padding_side = "left"
-    model = AutoModelForCausalLM.from_pretrained(entry["id"], dtype=torch.bfloat16, device_map="cuda")
-    model.eval()
-
-    outputs = []
-    for i in range(0, len(prompts), batch):
-        chunk = prompts[i:i + batch]
-        texts = [tok.apply_chat_template(
-            [{"role": "system", "content": SYSTEM}, {"role": "user", "content": p}],
-            tokenize=False, add_generation_prompt=True) for p in chunk]
-        enc = tok(texts, return_tensors="pt", padding=True).to("cuda")
-        with torch.no_grad():
-            gen = model.generate(**enc, max_new_tokens=a.max_new_tokens, do_sample=True,
-                                 temperature=0.7, top_p=0.9, pad_token_id=tok.pad_token_id)
-        for p, g in zip(chunk, gen[:, enc["input_ids"].shape[1]:]):
-            outputs.append((p, tok.decode(g, skip_special_tokens=True).strip()))
-        print(f"{len(outputs)}/{len(prompts)}  e.g. {outputs[-1][1][:80]!r}", flush=True)
+    if entry["tier"] == "xl":
+        outputs = generate_via_pair(entry["id"], prompts, batch, a.max_new_tokens)
+    else:
+        outputs = generate_local(entry["id"], prompts, batch, a.max_new_tokens)
 
     pirate = re.compile(r"\b(arr+|ahoy|matey|ye|yer|aye|hearties)\b", re.I)
     keep = [(p, r) for p, r in outputs if pirate.search(r) and len(r) > 20]
